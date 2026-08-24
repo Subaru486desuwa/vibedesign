@@ -10,6 +10,52 @@ if (process.argv.includes("--vd-validation-browser")) {
     validationWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
     void validationWindow.loadURL("about:blank");
   });
+  const printPort = Number(process.argv.find((arg) => arg.startsWith("--vd-print-port="))?.split("=")[1]);
+  const printToken = process.argv.find((arg) => arg.startsWith("--vd-print-token="))?.slice("--vd-print-token=".length);
+  if (Number.isInteger(printPort) && printPort > 0 && printToken) {
+    const printServer = require("node:http").createServer((req, res) => {
+      if (req.method !== "POST" || req.url !== "/print" || req.headers.authorization !== `Bearer ${printToken}`) {
+        res.writeHead(403).end("forbidden");
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+        if (body.length > 1024) req.destroy();
+      });
+      req.on("end", () => {
+        if (!validationWindow || validationWindow.isDestroyed()) {
+          res.writeHead(503).end("browser unavailable");
+          return;
+        }
+        let width;
+        let height;
+        try {
+          ({ width, height } = JSON.parse(body));
+        } catch {
+          res.writeHead(400).end("invalid request");
+          return;
+        }
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+          res.writeHead(400).end("invalid page size");
+          return;
+        }
+        void validationWindow.webContents.printToPDF({
+          printBackground: true,
+          margins: { top: 0, bottom: 0, left: 0, right: 0 },
+          pageSize: {
+            width: Math.max(0.01, Math.min(200, width / 96)),
+            height: Math.max(0.01, Math.min(200, height / 96)),
+          },
+        }).then(
+          (buffer) => res.writeHead(200, { "content-type": "application/pdf" }).end(buffer),
+          (error) => res.writeHead(500).end(String(error)),
+        );
+      });
+    });
+    printServer.listen(printPort, "127.0.0.1");
+    printServer.unref();
+  }
   app.on("window-all-closed", () => app.quit());
 // MCP stdio mode: coding agents spawn the app binary with `--vd-mcp` (see
 // server/src/agentInstall.ts resolveLaunch). Run the bundled MCP server and
